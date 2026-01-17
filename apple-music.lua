@@ -1,346 +1,246 @@
 -- apple-music.lua
 -- Apple Music status bar plugin for Wezterm
--- https://github.com/kevintcoughlin/wezterm-apple-music
+-- https://github.com/KevinTCoughlin/wezterm-apple-music
 --
 -- Features:
 --   - Smooth scrolling track title (marquee)
 --   - Animated equalizer visualization
---   - Clickable playback controls (prev/play-pause/next)
+--   - Clickable playback controls (Cmd+Click)
 --   - Volume indicator with Nerd Font icons
---   - Pause state indicator
 --
 -- Usage:
 --   local apple_music = require("plugins.apple-music")
---   apple_music.apply_to_config(config, {
---     update_interval = 500,
---     scroll_width = 35,
---     color = "#7aa2f7",
---     eq_style = "thin",  -- "thin", "classic", "dots", "bars", "wave"
---   })
+--   apple_music.apply_to_config(config, { eq_style = "thin" })
+--   apple_music.setup_keys(config)
 
 local wezterm = require("wezterm")
 local M = {}
 
 -- Default configuration
 local defaults = {
-  update_interval = 500,      -- ms between updates
-  scroll_width = 30,          -- max visible characters for track
-  scroll_padding = "   ·   ", -- separator in scroll loop
-  color = "#7aa2f7",          -- status bar text color
-  color_controls = "#565f89", -- playback controls color
-  color_controls_hover = "#7aa2f7",
-  eq_style = "thin",          -- "thin", "classic", "dots", "bars", "wave"
-  show_volume = true,         -- show volume icon
-  show_controls = true,       -- show clickable prev/play/next
-  show_date = true,           -- show date/time
+  update_interval = 500,
+  scroll_width = 30,
+  scroll_padding = "  ·  ",
+
+  -- Colors (Tokyo Night palette)
+  color_track = "#c0caf5",      -- track name
+  color_eq = "#7aa2f7",         -- equalizer
+  color_controls = "#565f89",    -- control icons default
+  color_prev_next = "#7dcfff",   -- prev/next icons
+  color_play = "#9ece6a",        -- play icon
+  color_pause = "#f7768e",       -- pause icon
+  color_volume = "#bb9af7",      -- volume icon
+  color_date = "#565f89",        -- date/time
+
+  eq_style = "thin",
+  show_volume = true,
+  show_controls = true,
+  show_date = true,
   date_format = "%a %b %-d %H:%M",
+  controls_path = os.getenv("HOME") .. "/.local/share/music-controls",
 }
 
--- Equalizer animation frames by style
+-- Equalizer styles
 local EQ_STYLES = {
-  thin = {
-    "▏▎▍",
-    "▎▍▌",
-    "▍▌▋",
-    "▌▋▊",
-    "▋▊▉",
-    "▊▉▊",
-    "▉▊▋",
-    "▊▋▌",
-    "▋▌▍",
-    "▌▍▎",
-    "▍▎▏",
-    "▎▏▎",
-  },
-  classic = {
-    "▁▃▅",
-    "▂▅▃",
-    "▃▂▅",
-    "▅▃▂",
-    "▃▅▃",
-    "▂▃▅",
-  },
-  dots = {
-    "●○●",
-    "○●○",
-    "●●○",
-    "○●●",
-    "●○○",
-    "○○●",
-  },
-  bars = {
-    "┃╏╏",
-    "╏┃╏",
-    "╏╏┃",
-    "╏┃╏",
-  },
-  wave = {
-    "∿∿∿",
-    "∾∿∿",
-    "∿∾∿",
-    "∿∿∾",
-  },
+  thin = { "▏▎▍", "▎▍▌", "▍▌▋", "▌▋▊", "▋▊▉", "▊▉▊", "▉▊▋", "▊▋▌", "▋▌▍", "▌▍▎", "▍▎▏", "▎▏▎" },
+  classic = { "▁▃▅", "▂▅▃", "▃▂▅", "▅▃▂", "▃▅▃", "▂▃▅" },
+  dots = { "●○●", "○●○", "●●○", "○●●", "●○○", "○○●" },
+  mini = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" },
 }
 
--- Control icons (Nerd Font)
-local CONTROLS = {
+-- Icons
+local ICONS = {
   prev = "󰒮",
   play = "󰐊",
   pause = "󰏤",
   next = "󰒭",
+  vol_mute = "󰖁",
+  vol_low = "󰕿",
+  vol_med = "󰖀",
+  vol_high = "󰕾",
 }
 
--- Volume icons (Nerd Font)
-local VOLUME_ICONS = {
-  muted = "󰖁",
-  low = "󰕿",
-  medium = "󰖀",
-  high = "󰕾",
-}
-
--- Internal state
-local state = {
-  position = 0,
-  last_track = "",
-  eq_frame = 1,
-  is_playing = false,
-}
+-- State
+local state = { position = 0, last_track = "", eq_frame = 1, is_playing = false }
 
 local function get_volume_icon(vol)
-  if vol == 0 then return VOLUME_ICONS.muted
-  elseif vol <= 33 then return VOLUME_ICONS.low
-  elseif vol <= 66 then return VOLUME_ICONS.medium
-  else return VOLUME_ICONS.high
-  end
+  if vol == 0 then return ICONS.vol_mute
+  elseif vol <= 33 then return ICONS.vol_low
+  elseif vol <= 66 then return ICONS.vol_med
+  else return ICONS.vol_high end
 end
 
 local function music_command(cmd)
   return wezterm.action_callback(function()
-    wezterm.run_child_process({
-      "osascript", "-e",
-      string.format('tell application "Music" to %s', cmd)
-    })
+    wezterm.run_child_process({ "osascript", "-e", 'tell application "Music" to ' .. cmd })
   end)
 end
 
-local function get_apple_music_info()
-  local success, stdout, _ = wezterm.run_child_process({
-    "osascript",
-    "-e",
-    [[
+local function get_music_info()
+  local ok, out = wezterm.run_child_process({
+    "osascript", "-e", [[
       tell application "System Events"
         if not (exists process "Music") then return "OFF"
       end tell
       tell application "Music"
         set vol to sound volume
         if player state is playing then
-          set trackName to name of current track
-          set artistName to artist of current track
-          return "PLAYING|" & vol & "|" & trackName & " - " & artistName
+          return "PLAYING|" & vol & "|" & name of current track & " — " & artist of current track
         else if player state is paused then
-          set trackName to name of current track
-          set artistName to artist of current track
-          return "PAUSED|" & vol & "|" & trackName & " - " & artistName
+          return "PAUSED|" & vol & "|" & name of current track & " — " & artist of current track
         else
           return "STOPPED|" & vol & "|"
         end if
       end tell
-    ]],
+    ]]
   })
-  if success then
-    return stdout:gsub("^%s*(.-)%s*$", "%1")
-  end
-  return "OFF"
+  return ok and out:gsub("^%s*(.-)%s*$", "%1") or "OFF"
 end
 
 local function build_status(opts)
-  local info = get_apple_music_info()
-
+  local info = get_music_info()
   if info == "OFF" then
-    state.position = 0
-    state.last_track = ""
-    state.is_playing = false
+    state = { position = 0, last_track = "", eq_frame = 1, is_playing = false }
     return nil
   end
 
-  local player_state, vol, track = info:match("^(%w+)|(%d+)|(.*)$")
-  if not player_state then return nil end
+  local pstate, vol, track = info:match("^(%w+)|(%d+)|(.*)$")
+  if not pstate or track == "" then return nil end
 
   vol = tonumber(vol) or 0
-  state.is_playing = (player_state == "PLAYING")
+  state.is_playing = (pstate == "PLAYING")
 
-  if track == "" then
-    state.position = 0
-    state.last_track = ""
-    return nil
-  end
-
-  -- Reset scroll on track change
   if track ~= state.last_track then
     state.last_track = track
     state.position = 0
   end
 
-  -- Get equalizer frames for selected style
   local eq_frames = EQ_STYLES[opts.eq_style] or EQ_STYLES.thin
-  local eq_display = ""
-
+  local eq = state.is_playing and eq_frames[state.eq_frame] or "⏸"
   if state.is_playing then
-    eq_display = eq_frames[state.eq_frame]
     state.eq_frame = (state.eq_frame % #eq_frames) + 1
-  else
-    eq_display = "⏸ "
   end
 
-  -- Scrolling text
-  local visible_track
+  local visible
   if #track <= opts.scroll_width then
-    visible_track = track
+    visible = track
   else
-    local scroll_text = track .. opts.scroll_padding .. track
-    local start_pos = state.position + 1
-    local end_pos = start_pos + opts.scroll_width - 1
-    visible_track = scroll_text:sub(start_pos, end_pos)
-
-    state.position = state.position + 1
-    if state.position >= #track + #opts.scroll_padding then
-      state.position = 0
-    end
+    local scroll = track .. opts.scroll_padding .. track
+    visible = scroll:sub(state.position + 1, state.position + opts.scroll_width)
+    state.position = (state.position + 1) % (#track + #opts.scroll_padding)
   end
 
-  return {
-    eq = eq_display,
-    track = visible_track,
-    volume = vol,
-    is_playing = state.is_playing,
-  }
+  return { eq = eq, track = visible, volume = vol, playing = state.is_playing }
 end
 
---- Apply Apple Music status to Wezterm config
---- @param config table Wezterm config object
---- @param user_opts table|nil Optional configuration overrides
 function M.apply_to_config(config, user_opts)
-  local opts = {}
-  for k, v in pairs(defaults) do opts[k] = v end
-  if user_opts then
-    for k, v in pairs(user_opts) do opts[k] = v end
-  end
-
+  local opts = setmetatable(user_opts or {}, { __index = defaults })
   config.status_update_interval = opts.update_interval
 
+  local ctrl_path = opts.controls_path
+  local prev_url = "file://" .. ctrl_path .. "/PrevTrack.app"
+  local play_url = "file://" .. ctrl_path .. "/PlayPause.app"
+  local next_url = "file://" .. ctrl_path .. "/NextTrack.app"
+
   wezterm.on("update-status", function(window, pane)
-    local music = build_status(opts)
-    local elements = {}
+    local m = build_status(opts)
+    local e = {}
 
-    if music then
+    if m then
       -- Equalizer
-      table.insert(elements, { Foreground = { Color = opts.color } })
-      table.insert(elements, { Text = music.eq .. " " })
+      table.insert(e, { Foreground = { Color = opts.color_eq } })
+      table.insert(e, { Text = m.eq .. "  " })
 
-      -- Clickable controls
+      -- Controls
       if opts.show_controls then
-        -- Previous
-        table.insert(elements, { Foreground = { Color = opts.color_controls } })
-        table.insert(elements, { Text = " " .. CONTROLS.prev .. " " })
+        -- Prev
+        table.insert(e, { Foreground = { Color = opts.color_prev_next } })
+        table.insert(e, { Attribute = { Hyperlink = prev_url } })
+        table.insert(e, { Text = ICONS.prev })
+        table.insert(e, "ResetAttributes")
+
+        table.insert(e, { Text = " " })
 
         -- Play/Pause
-        local play_pause_icon = music.is_playing and CONTROLS.pause or CONTROLS.play
-        table.insert(elements, { Text = play_pause_icon })
+        if m.playing then
+          table.insert(e, { Foreground = { Color = opts.color_pause } })
+        else
+          table.insert(e, { Foreground = { Color = opts.color_play } })
+        end
+        table.insert(e, { Attribute = { Hyperlink = play_url } })
+        table.insert(e, { Text = m.playing and ICONS.pause or ICONS.play })
+        table.insert(e, "ResetAttributes")
+
+        table.insert(e, { Text = " " })
 
         -- Next
-        table.insert(elements, { Text = " " .. CONTROLS.next .. "  " })
+        table.insert(e, { Foreground = { Color = opts.color_prev_next } })
+        table.insert(e, { Attribute = { Hyperlink = next_url } })
+        table.insert(e, { Text = ICONS.next })
+        table.insert(e, "ResetAttributes")
+
+        table.insert(e, { Text = "  " })
       end
 
-      -- Track name
-      table.insert(elements, { Foreground = { Color = opts.color } })
-      table.insert(elements, { Text = music.track })
+      -- Track
+      table.insert(e, { Foreground = { Color = opts.color_track } })
+      table.insert(e, { Text = m.track })
 
       -- Volume
       if opts.show_volume then
-        table.insert(elements, { Text = "  " .. get_volume_icon(music.volume) })
+        table.insert(e, { Foreground = { Color = opts.color_volume } })
+        table.insert(e, { Text = "  " .. get_volume_icon(m.volume) })
       end
 
-      table.insert(elements, { Text = "  │  " })
+      table.insert(e, { Foreground = { Color = opts.color_date } })
+      table.insert(e, { Text = "  │  " })
     end
 
     -- Date
     if opts.show_date then
-      table.insert(elements, { Foreground = { Color = opts.color } })
-      table.insert(elements, { Text = wezterm.strftime(opts.date_format) .. "  " })
+      table.insert(e, { Foreground = { Color = opts.color_date } })
+      table.insert(e, { Text = wezterm.strftime(opts.date_format) .. "  " })
     end
 
-    window:set_right_status(wezterm.format(elements))
+    window:set_right_status(wezterm.format(e))
   end)
-
-  -- Add mouse bindings for clickable controls
-  local mouse_bindings = config.mouse_bindings or {}
-
-  -- These work on the status area
-  table.insert(mouse_bindings, {
-    event = { Up = { streak = 1, button = "Left" } },
-    mods = "NONE",
-    action = wezterm.action_callback(function(window, pane)
-      -- Get click position relative to status bar
-      -- Note: Wezterm doesn't expose exact click coordinates in status bar
-      -- so we use keyboard shortcuts as the primary control method
-    end),
-  })
-
-  config.mouse_bindings = mouse_bindings
 end
 
---- Setup keyboard shortcuts for music control
---- @param config table Wezterm config object
---- @param leader_mods string Modifier keys (default: "LEADER")
-function M.setup_keys(config, leader_mods)
-  leader_mods = leader_mods or "LEADER"
+function M.setup_keys(config, mods)
+  mods = mods or "LEADER"
   local keys = config.keys or {}
-
-  -- Play/Pause: Leader + m
-  table.insert(keys, {
-    key = "m",
-    mods = leader_mods,
-    action = music_command("playpause"),
-  })
-
-  -- Next: Leader + >
-  table.insert(keys, {
-    key = ">",
-    mods = leader_mods .. "|SHIFT",
-    action = music_command("next track"),
-  })
-
-  -- Previous: Leader + <
-  table.insert(keys, {
-    key = "<",
-    mods = leader_mods .. "|SHIFT",
-    action = music_command("previous track"),
-  })
-
-  -- Volume Up: Leader + +
-  table.insert(keys, {
-    key = "+",
-    mods = leader_mods .. "|SHIFT",
-    action = music_command("set sound volume to (sound volume + 10)"),
-  })
-
-  -- Volume Down: Leader + _
-  table.insert(keys, {
-    key = "_",
-    mods = leader_mods .. "|SHIFT",
-    action = music_command("set sound volume to (sound volume - 10)"),
-  })
-
+  local bindings = {
+    { key = "m", cmd = "playpause" },
+    { key = ">", shift = true, cmd = "next track" },
+    { key = "<", shift = true, cmd = "previous track" },
+    { key = "+", shift = true, cmd = "set sound volume to (sound volume + 10)" },
+    { key = "_", shift = true, cmd = "set sound volume to (sound volume - 10)" },
+  }
+  for _, b in ipairs(bindings) do
+    table.insert(keys, {
+      key = b.key,
+      mods = b.shift and (mods .. "|SHIFT") or mods,
+      action = music_command(b.cmd),
+    })
+  end
   config.keys = keys
 end
 
---- Get available equalizer styles
-function M.get_eq_styles()
-  local styles = {}
-  for k, _ in pairs(EQ_STYLES) do
-    table.insert(styles, k)
+function M.create_control_apps()
+  local path = defaults.controls_path
+  os.execute("mkdir -p " .. path)
+  for _, app in ipairs({
+    { "PlayPause", "playpause" },
+    { "NextTrack", "next track" },
+    { "PrevTrack", "previous track" },
+  }) do
+    local f = io.open("/tmp/" .. app[1] .. ".applescript", "w")
+    if f then
+      f:write('tell application "Music" to ' .. app[2])
+      f:close()
+      os.execute("osacompile -o " .. path .. "/" .. app[1] .. ".app /tmp/" .. app[1] .. ".applescript 2>/dev/null")
+    end
   end
-  return styles
 end
 
 return M
