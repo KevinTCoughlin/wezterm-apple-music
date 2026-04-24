@@ -15,15 +15,7 @@
 
 local wezterm = require("wezterm")
 -- Get plugin directory for relative requires
-local function get_script_dir()
-  local source = debug.getinfo(1).source
-  if source:sub(1, 1) == "@" then
-    source = source:sub(2)
-  end
-  return source:match("(.*/)") or "./"
-end
-
-local utils = dofile(get_script_dir() .. "lib.lua")
+local lib = dofile(os.getenv("HOME") .. "/.config/wezterm/plugins/lib.lua")
 local M = {}
 
 -- Default configuration
