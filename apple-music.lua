@@ -14,6 +14,7 @@
 --   apple_music.setup_keys(config)
 
 local wezterm = require("wezterm")
+local utils = require("shared.wezterm_utils")
 local M = {}
 
 -- Default configuration
@@ -72,7 +73,8 @@ end
 
 local function music_command(cmd)
   return wezterm.action_callback(function()
-    wezterm.run_child_process({ "osascript", "-e", 'tell application "Music" to ' .. cmd })
+    local escaped_cmd = utils.escape_applescript(cmd)
+    wezterm.run_child_process({ "osascript", "-e", 'tell application "Music" to ' .. escaped_cmd })
   end)
 end
 
@@ -228,18 +230,40 @@ end
 
 function M.create_control_apps()
   local path = defaults.controls_path
-  os.execute("mkdir -p " .. path)
+  
+  -- Use safe mkdir instead of os.execute
+  if not utils.mkdir_p(path) then
+    wezterm.log_error("Failed to create control apps directory: " .. path)
+    return
+  end
+  
   for _, app in ipairs({
     { "PlayPause", "playpause" },
     { "NextTrack", "next track" },
     { "PrevTrack", "previous track" },
   }) do
-    local f = io.open("/tmp/" .. app[1] .. ".applescript", "w")
-    if f then
-      f:write('tell application "Music" to ' .. app[2])
-      f:close()
-      os.execute("osacompile -o " .. path .. "/" .. app[1] .. ".app /tmp/" .. app[1] .. ".applescript 2>/dev/null")
+    -- Use os.tmpname() for secure temp file instead of /tmp/ path
+    local tmp_file = utils.get_temp_file("wezterm-music", ".applescript")
+    
+    -- Write AppleScript to temp file
+    if not utils.safe_write_file(tmp_file, 'tell application "Music" to ' .. app[2]) then
+      wezterm.log_error("Failed to write AppleScript to " .. tmp_file)
+      goto continue_app
     end
+    
+    -- Compile to app bundle
+    local success, output, stderr = utils.safe_run({
+      "osacompile", "-o", path .. "/" .. app[1] .. ".app", tmp_file
+    })
+    
+    if not success then
+      wezterm.log_error("Failed to compile " .. app[1] .. ".app: " .. (stderr or "unknown error"))
+    end
+    
+    -- Clean up temp file
+    os.remove(tmp_file)
+    
+    ::continue_app::
   end
 end
 
