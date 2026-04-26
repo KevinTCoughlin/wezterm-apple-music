@@ -16,6 +16,7 @@
 local wezterm = require("wezterm")
 -- Get plugin directory for relative requires
 local lib = dofile(os.getenv("HOME") .. "/.config/wezterm/plugins/lib.lua")
+local utils = lib
 local M = {}
 
 -- Default configuration
