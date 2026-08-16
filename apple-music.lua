@@ -1,5 +1,5 @@
 -- apple-music.lua
--- Apple Music status bar plugin for Wezterm
+-- Apple Music status bar plugin for WezTerm
 -- https://github.com/KevinTCoughlin/wezterm-apple-music
 --
 -- Features:
@@ -14,10 +14,11 @@
 --   apple_music.setup_keys(config)
 
 local wezterm = require("wezterm")
--- Get plugin directory for relative requires
-local lib = dofile(os.getenv("HOME") .. "/.config/wezterm/plugins/lib.lua")
-local utils = lib
+local source = debug.getinfo(1, "S").source:gsub("^@", "")
+local plugin_dir = source:match("^(.*[/\\])") or "./"
+local utils = dofile(plugin_dir .. "lib.lua")
 local M = {}
+local FIELD_SEPARATOR = string.char(31)
 
 -- Default configuration
 local defaults = {
@@ -65,6 +66,7 @@ local ICONS = {
 
 -- State
 local state = { position = 0, last_track = "", eq_frame = 1, is_playing = false }
+local warned_unsupported = false
 
 local function get_volume_icon(vol)
   if vol == 0 then return ICONS.vol_mute
@@ -73,14 +75,42 @@ local function get_volume_icon(vol)
   else return ICONS.vol_high end
 end
 
+local function is_macos()
+  return type(wezterm.target_triple) == "string"
+    and wezterm.target_triple:find("apple%-darwin") ~= nil
+end
+
+local function utf8_len(value)
+  local _, count = value:gsub("[^\128-\191]", "")
+  return count
+end
+
+local function utf8_sub(value, first, last)
+  local start_byte = utf8.offset(value, first)
+  if not start_byte then return "" end
+  local end_byte = utf8.offset(value, last + 1)
+  return value:sub(start_byte, end_byte and (end_byte - 1) or -1)
+end
+
 local function music_command(cmd)
   return wezterm.action_callback(function()
-    local escaped_cmd = utils.escape_applescript(cmd)
-    wezterm.run_child_process({ "osascript", "-e", 'tell application "Music" to ' .. escaped_cmd })
+    if not is_macos() then return end
+    local ok, _, err = utils.safe_run({ "osascript", "-e", 'tell application "Music" to ' .. cmd })
+    if not ok then
+      wezterm.log_error("Apple Music command failed: " .. (err or cmd))
+    end
   end)
 end
 
 local function get_music_info()
+  if not is_macos() then
+    if not warned_unsupported then
+      wezterm.log_error("wezterm-apple-music is only supported on macOS")
+      warned_unsupported = true
+    end
+    return "OFF"
+  end
+
   local ok, out = wezterm.run_child_process({
     "osascript", "-e", [[
       tell application "System Events"
@@ -88,12 +118,13 @@ local function get_music_info()
       end tell
       tell application "Music"
         set vol to sound volume
+        set sep to ASCII character 31
         if player state is playing then
-          return "PLAYING|" & vol & "|" & name of current track & " — " & artist of current track
+          return "PLAYING" & sep & vol & sep & name of current track & " — " & artist of current track
         else if player state is paused then
-          return "PAUSED|" & vol & "|" & name of current track & " — " & artist of current track
+          return "PAUSED" & sep & vol & sep & name of current track & " — " & artist of current track
         else
-          return "STOPPED|" & vol & "|"
+          return "STOPPED" & sep & vol & sep
         end if
       end tell
     ]]
@@ -108,7 +139,8 @@ local function build_status(opts)
     return nil
   end
 
-  local pstate, vol, track = info:match("^(%w+)|(%d+)|(.*)$")
+  local pstate, vol, track =
+    info:match("^(%w+)" .. FIELD_SEPARATOR .. "(%d+)" .. FIELD_SEPARATOR .. "(.*)$")
   if not pstate or track == "" then return nil end
 
   vol = tonumber(vol) or 0
@@ -126,12 +158,14 @@ local function build_status(opts)
   end
 
   local visible
-  if #track <= opts.scroll_width then
+  local track_length = utf8_len(track)
+  local padding_length = utf8_len(opts.scroll_padding)
+  if track_length <= opts.scroll_width then
     visible = track
   else
     local scroll = track .. opts.scroll_padding .. track
-    visible = scroll:sub(state.position + 1, state.position + opts.scroll_width)
-    state.position = (state.position + 1) % (#track + #opts.scroll_padding)
+    visible = utf8_sub(scroll, state.position + 1, state.position + opts.scroll_width)
+    state.position = (state.position + 1) % (track_length + padding_length)
   end
 
   return { eq = eq, track = visible, volume = vol, playing = state.is_playing }
@@ -139,6 +173,11 @@ end
 
 function M.apply_to_config(config, user_opts)
   local opts = setmetatable(user_opts or {}, { __index = defaults })
+  opts.update_interval = math.max(100, tonumber(opts.update_interval) or defaults.update_interval)
+  opts.scroll_width = math.max(1, math.floor(tonumber(opts.scroll_width) or defaults.scroll_width))
+  if type(opts.scroll_padding) ~= "string" or opts.scroll_padding == "" then
+    opts.scroll_padding = defaults.scroll_padding
+  end
   config.status_update_interval = opts.update_interval
 
   local ctrl_path = opts.controls_path
@@ -206,7 +245,7 @@ function M.apply_to_config(config, user_opts)
       table.insert(e, { Text = wezterm.strftime(opts.date_format) .. "  " })
     end
 
-    window:set_right_status(wezterm.format(e))
+    window:set_right_status(#e > 0 and wezterm.format(e) or "")
   end)
 end
 
@@ -244,28 +283,15 @@ function M.create_control_apps()
     { "NextTrack", "next track" },
     { "PrevTrack", "previous track" },
   }) do
-    -- Use os.tmpname() for secure temp file instead of /tmp/ path
-    local tmp_file = utils.get_temp_file("wezterm-music", ".applescript")
-    
-    -- Write AppleScript to temp file
-    if not utils.safe_write_file(tmp_file, 'tell application "Music" to ' .. app[2]) then
-      wezterm.log_error("Failed to write AppleScript to " .. tmp_file)
-      goto continue_app
-    end
-    
-    -- Compile to app bundle
-    local success, output, stderr = utils.safe_run({
-      "osacompile", "-o", path .. "/" .. app[1] .. ".app", tmp_file
+    local success, _, stderr = utils.safe_run({
+      "osacompile", "-e", 'tell application "Music" to ' .. app[2],
+      "-o", path .. "/" .. app[1] .. ".app"
     })
     
     if not success then
       wezterm.log_error("Failed to compile " .. app[1] .. ".app: " .. (stderr or "unknown error"))
     end
     
-    -- Clean up temp file
-    os.remove(tmp_file)
-    
-    ::continue_app::
   end
 end
 

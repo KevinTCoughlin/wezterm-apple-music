@@ -1,6 +1,6 @@
-# Wezterm Apple Media Plugin
+# WezTerm Apple Media Plugin
 
-Status bar plugin for Apple Music and Apple Podcasts in Wezterm.
+Status bar plugin for Apple Music, Apple Podcasts, and Apple TV in WezTerm.
 
 ![Preview](https://github.com/KevinTCoughlin/wezterm-apple-music/raw/main/preview.png)
 
@@ -16,13 +16,26 @@ Status bar plugin for Apple Music and Apple Podcasts in Wezterm.
 
 ## Requirements
 
-- macOS with Apple Music and/or Apple Podcasts
-- Wezterm
+- macOS with Apple Music, Apple Podcasts, and/or Apple TV
+- WezTerm
 - Nerd Font (for icons)
 
 ## Installation
 
-### Option 1: Copy to config
+### Option 1: WezTerm plugin manager
+
+```lua
+local wezterm = require("wezterm")
+local config = wezterm.config_builder()
+local apple_media = wezterm.plugin.require(
+  "https://github.com/KevinTCoughlin/wezterm-apple-music"
+)
+
+apple_media.apply_to_config(config)
+apple_media.setup_keys(config) -- optional
+```
+
+### Option 2: Copy to config
 
 ```bash
 mkdir -p ~/.config/wezterm/plugins
@@ -30,11 +43,19 @@ curl -o ~/.config/wezterm/plugins/apple-media.lua \
   https://raw.githubusercontent.com/KevinTCoughlin/wezterm-apple-music/main/apple-media.lua
 ```
 
-### Option 2: Clone
+### Option 3: Clone
 
 ```bash
 git clone https://github.com/KevinTCoughlin/wezterm-apple-music \
   ~/.config/wezterm/plugins/apple-media
+```
+
+Load a cloned copy with:
+
+```lua
+local apple_media = dofile(
+  wezterm.config_dir .. "/plugins/apple-media/apple-media.lua"
+)
 ```
 
 ## Usage
@@ -55,6 +76,8 @@ apple_media.apply_to_config(config, {
 -- Setup keyboard shortcuts
 apple_media.setup_keys(config)
 ```
+
+The `require` form above applies to the single-file copy installation.
 
 ## Configuration
 
@@ -128,6 +151,11 @@ After calling `setup_keys(config)`:
 
 - `apple-media.lua` - Combined Music + Podcasts plugin (recommended)
 - `apple-music.lua` - Music-only plugin (legacy)
+
+## Troubleshooting
+
+The first use of each application may trigger a macOS Automation permission
+prompt for WezTerm. Media queries and controls are disabled on non-macOS hosts.
 
 ## License
 
