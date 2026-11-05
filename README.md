@@ -1,3 +1,6 @@
+> [!WARNING]
+> **Deprecated.** Superseded by [wezterm-media](https://github.com/KevinTCoughlin/wezterm-media), which works with any Now Playing app (Spotify, browsers, Music, Podcasts, TV). See its [migration guide](https://github.com/KevinTCoughlin/wezterm-media#migrating-from-wezterm-apple-music). This repository is archived and will not receive updates.
+
 # WezTerm Apple Media Plugin
 
 Status bar plugin for Apple Music, Apple Podcasts, and Apple TV in WezTerm.
